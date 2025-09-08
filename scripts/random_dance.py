@@ -70,7 +70,7 @@ Simplified: {stats['simplified_path_cost']:5.3f}"""
             plan = simplify.path
             plan.interpolate_to_resolution(vamp_module.resolution())
 
-            sim.play_once(plan)
+            sim.animate(plan)
 
             start = goal
 
