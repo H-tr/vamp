@@ -32,6 +32,7 @@ namespace vamp::collision
             {
                 spheres.emplace_back(sphere);
             }
+            ee_index = o.ee_index;
         }
 
         std::vector<Sphere<DataT>> spheres;
@@ -39,6 +40,11 @@ namespace vamp::collision
         // attachments
         mutable std::vector<Sphere<DataT>> posed_spheres;
         Eigen::Transform<DataT, 3, Eigen::Isometry> tf;
+        // Which end-effector this attachment is anchored to.  Multi-EE
+        // robots (e.g. bimanual arms) generate one fkcc_attach<rake>
+        // specialization per EE and dispatch on this index.  Single-EE
+        // robots always see 0 here.
+        std::size_t ee_index = 0;
 
         inline void pose(const Eigen::Transform<DataT, 3, Eigen::Isometry> &p_tf) const noexcept
         {
