@@ -151,7 +151,7 @@ TEST_CASE("Distance grid interpolation is exact for linear fields", "[collision]
     std::uniform_real_distribution<float> ur(0.F, 0.3F);
     for (auto i = 0U; i < 1000; ++i)
     {
-        Lanes xs, ys, zs, rs;
+        alignas(V::S::Alignment) Lanes xs, ys, zs, rs;
         for (auto lane = 0U; lane < xs.size(); ++lane)
         {
             xs[lane] = ux(rng);
@@ -187,7 +187,7 @@ TEST_CASE("Distance grid SIMD lanes match a scalar trilinear reference", "[colli
     std::size_t num_free = 0;
     for (auto i = 0U; i < 2000; ++i)
     {
-        Lanes xs, ys, zs, rs;
+        alignas(V::S::Alignment) Lanes xs, ys, zs, rs;
         for (auto lane = 0U; lane < xs.size(); ++lane)
         {
             xs[lane] = qx(rng);
