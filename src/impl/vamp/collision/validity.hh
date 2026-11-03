@@ -6,6 +6,7 @@
 #include <vamp/collision/sphere_capsule.hh>
 #include <vamp/collision/sphere_cuboid.hh>
 #include <vamp/collision/sphere_heightfield.hh>
+#include <vamp/collision/sphere_distance_grid.hh>
 #include <vamp/collision/sphere_polytope.hh>
 #include <vamp/collision/math.hh>
 
@@ -44,7 +45,15 @@ namespace vamp
         return not collision::sphere_sphere_sql2(ax, ay, az, ar, bx, by, bz, br).test_zero();
     }
 
-    template <typename DataT, typename ArgT1, typename ArgT2, typename ArgT3, typename ArgT4>
+    // Collision of a sphere with the environment. ``Field`` selects the field of each distance grid
+    // that the sphere reads (see DistanceGrid); the other shapes do not depend on it.
+    template <
+        std::size_t Field,
+        typename DataT,
+        typename ArgT1,
+        typename ArgT2,
+        typename ArgT3,
+        typename ArgT4>
     inline constexpr auto sphere_environment_in_collision(
         const collision::Environment<DataT> &e,  //
         ArgT1 sx_,
@@ -138,6 +147,14 @@ namespace vamp
             }
         }
 
+        for (const auto &eg : e.distance_grids)
+        {
+            if (not collision::sphere_distance_grid(eg, eg.field(Field), sx, sy, sz, sr).test_zero())
+            {
+                return true;
+            }
+        }
+
         for (const auto &ep : e.polytopes)
         {
             const auto diff = ep.min_distance - max_extent;
@@ -162,6 +179,18 @@ namespace vamp
         }
 
         return false;
+    }
+
+    // Collision of a sphere with the environment, reading field 0 of each distance grid.
+    template <typename DataT, typename ArgT1, typename ArgT2, typename ArgT3, typename ArgT4>
+    inline constexpr auto sphere_environment_in_collision(
+        const collision::Environment<DataT> &e,  //
+        ArgT1 sx_,
+        ArgT2 sy_,
+        ArgT3 sz_,
+        ArgT4 sr_) noexcept -> bool
+    {
+        return sphere_environment_in_collision<0>(e, sx_, sy_, sz_, sr_);
     }
 
     template <typename DataT, typename ArgT1, typename ArgT2, typename ArgT3, typename ArgT4>
@@ -257,6 +286,14 @@ namespace vamp
             if (not collision::sphere_heightfield(eh, sx, sy, sz, sr).test_zero())
             {
                 objects.emplace_back(eh.name);
+            }
+        }
+
+        for (const auto &eg : e.distance_grids)
+        {
+            if (not collision::sphere_distance_grid(eg, eg.field(0), sx, sy, sz, sr).test_zero())
+            {
+                objects.emplace_back(eg.name);
             }
         }
 

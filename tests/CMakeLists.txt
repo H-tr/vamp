@@ -6,6 +6,7 @@ add_executable(vamp_tests
     test_halton.cc
     test_capt.cc
     test_polytope.cc
+    test_distance_grid.cc
 )
 
 target_link_libraries(vamp_tests PRIVATE vamp_cpp Catch2::Catch2WithMain)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 #include <limits>
@@ -312,6 +314,102 @@ namespace vamp::collision
           , yd2(other.yd2)
           , data(other.data)
         {
+        }
+    };
+
+    // A distance grid: signed distances (positive in free space) at the points of a regular
+    // lattice, read by trilinear interpolation. The lattice starts at (x, y, z) with spacing
+    // (xs, ys, zs) and has nx * ny * nz points; each field is stored row-major with the z index
+    // contiguous. The box spanned by the lattice, from (x, y, z) to (xu, yu, zu), is the
+    // workspace: outside it, the distance is minus the distance to the box. A grid can hold
+    // several fields on the same lattice, for example a scene with and without some of its
+    // obstacles. Spheres read field 0 unless the robot selects another field; a grid without
+    // the selected field gives field 0. The fields are shared, not copied, between the float
+    // environment and its vector copies.
+    template <typename DataT>
+    struct DistanceGrid : public Shape<DataT>
+    {
+        DataT x;  // first lattice point
+        DataT y;
+        DataT z;
+
+        DataT xs;  // lattice spacing
+        DataT ys;
+        DataT zs;
+
+        DataT xu;  // last lattice point
+        DataT yu;
+        DataT zu;
+
+        std::int32_t nx;  // lattice size
+        std::int32_t ny;
+        std::int32_t nz;
+
+        std::size_t num_fields;
+        std::shared_ptr<const std::vector<float>> data;  // num_fields * nx * ny * nz values
+
+        DistanceGrid() = default;
+
+        explicit DistanceGrid(
+            float x,
+            float y,
+            float z,
+            float xs,
+            float ys,
+            float zs,
+            std::int32_t nx,
+            std::int32_t ny,
+            std::int32_t nz,
+            std::size_t num_fields,
+            std::shared_ptr<const std::vector<float>> data)
+          : Shape<DataT>()
+          , x(x)
+          , y(y)
+          , z(z)
+          , xs(xs)
+          , ys(ys)
+          , zs(zs)
+          , xu(x + xs * static_cast<float>(nx - 1))
+          , yu(y + ys * static_cast<float>(ny - 1))
+          , zu(z + zs * static_cast<float>(nz - 1))
+          , nx(nx)
+          , ny(ny)
+          , nz(nz)
+          , num_fields(num_fields)
+          , data(std::move(data))
+        {
+            Shape<DataT>::min_distance = 0;
+        }
+
+        template <typename OtherDataT>
+        explicit DistanceGrid(const DistanceGrid<OtherDataT> &other)
+          : Shape<DataT>(other)
+          , x(other.x)
+          , y(other.y)
+          , z(other.z)
+          , xs(other.xs)
+          , ys(other.ys)
+          , zs(other.zs)
+          , xu(other.xu)
+          , yu(other.yu)
+          , zu(other.zu)
+          , nx(other.nx)
+          , ny(other.ny)
+          , nz(other.nz)
+          , num_fields(other.num_fields)
+          , data(other.data)
+        {
+        }
+
+        inline auto num_points() const noexcept -> std::size_t
+        {
+            return static_cast<std::size_t>(nx) * static_cast<std::size_t>(ny) * static_cast<std::size_t>(nz);
+        }
+
+        // The values of field ``index``, or of field 0 if the grid has no such field.
+        inline auto field(std::size_t index) const noexcept -> const float *
+        {
+            return data->data() + (index < num_fields ? index : 0) * num_points();
         }
     };
 
