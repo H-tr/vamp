@@ -126,7 +126,7 @@ def main(
             row["agreement"] = float((valid == truth).mean())
             results.append(row)
 
-    df = pd.DataFrame.from_dict(results)
+    df = pd.DataFrame(results)
 
     # Convert to microseconds
     df["planning_time"] = df["planning_time"].dt.microseconds
