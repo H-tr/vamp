@@ -163,7 +163,7 @@ void vamp::binding::init_environment(nanobind::module_ &pymodule)
         .def_prop_ro(
             "shape",
             [](const vc::DistanceGrid<float> &g) { return std::array<std::int32_t, 3>{g.nx, g.ny, g.nz}; })
-        .def_ro("num_fields", &vc::DistanceGrid<float>::num_fields)
+        .def_prop_ro("num_fields", &vc::DistanceGrid<float>::num_fields)
         .def_prop_ro(
             "workspaces",
             [](const vc::DistanceGrid<float> &g) { return g.workspaces; },

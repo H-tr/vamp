@@ -266,7 +266,7 @@ TEST_CASE("Spheres read the distance grid field that the robot selects", "[colli
 
     vc::Environment<float> env;
     env.distance_grids.emplace_back(make_grid(values));
-    REQUIRE(env.distance_grids.front().num_fields == 2);
+    REQUIRE(env.distance_grids.front().num_fields() == 2);
     const vc::Environment<V> simd_env(env);
 
     const auto x = V::fill(-0.6F);
@@ -295,8 +295,65 @@ TEST_CASE("Vector environments share the distance grid values", "[collision][dis
     vc::Environment<float> env;
     env.distance_grids.emplace_back(make_grid(sample_field([](float x, float, float) { return x; })));
     const vc::Environment<V> simd_env(env);
-    REQUIRE(simd_env.distance_grids.front().data.get() == env.distance_grids.front().data.get());
+    REQUIRE(simd_env.distance_grids.front().fields == env.distance_grids.front().fields);
     REQUIRE(simd_env.distance_grids.front().field(0) == env.distance_grids.front().field(0));
+}
+
+TEST_CASE("Distance grids read the caller's values in place", "[collision][distance_grid]")
+{
+    // The caller keeps the values; the grid only points at them.
+    auto values = std::make_shared<std::vector<float>>(sample_field([](float, float, float) { return 1.F; }));
+    const std::shared_ptr<const float> field(values, values->data());
+    vc::Environment<float> env;
+    env.distance_grids.emplace_back(
+        origin[0],
+        origin[1],
+        origin[2],
+        spacing[0],
+        spacing[1],
+        spacing[2],
+        size[0],
+        size[1],
+        size[2],
+        std::vector<std::shared_ptr<const float>>{field});
+    REQUIRE(env.distance_grids.front().field(0) == values->data());
+    const vc::Environment<V> simd_env(env);
+
+    const auto collides = [&]()
+    {
+        return vamp::sphere_environment_in_collision(
+            simd_env, V::fill(-0.6F), V::fill(0.8F), V::fill(0.F), 0.1F);
+    };
+    REQUIRE_FALSE(collides());
+    std::fill(values->begin(), values->end(), 0.05F);
+    REQUIRE(collides());
+
+    REQUIRE_THROWS_AS(
+        vc::DistanceGrid<float>(
+            origin[0],
+            origin[1],
+            origin[2],
+            spacing[0],
+            spacing[1],
+            spacing[2],
+            size[0],
+            size[1],
+            size[2],
+            {}),
+        std::invalid_argument);
+    REQUIRE_THROWS_AS(
+        vc::DistanceGrid<float>(
+            origin[0],
+            origin[1],
+            origin[2],
+            spacing[0],
+            spacing[1],
+            spacing[2],
+            size[0],
+            size[1],
+            size[2],
+            std::vector<std::shared_ptr<const float>>{nullptr}),
+        std::invalid_argument);
 }
 
 TEST_CASE("Distance grid factory rejects malformed grids", "[collision][distance_grid]")

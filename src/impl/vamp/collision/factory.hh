@@ -2,6 +2,7 @@
 
 #include <array>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 #include <vamp/vector.hh>
 #include <vamp/collision/shapes.hh>
@@ -435,7 +436,8 @@ namespace vamp::collision::factory
              contiguous, one after another
            - Optionally, the workspace of each field as its lower and upper corners (a face may lie
              at infinity); by default the lattice's box
-         * Throws std::invalid_argument for a malformed grid (see collision::DistanceGrid).
+         * The grid keeps the values, which must be finite. Throws std::invalid_argument for
+           malformed values or a malformed grid (see collision::DistanceGrid).
          */
         inline static auto flat(
             float origin_x,
@@ -451,7 +453,31 @@ namespace vamp::collision::factory
             std::vector<collision::DistanceGrid<float>::Workspace> workspaces = {})
             -> collision::DistanceGrid<float>
         {
-            return collision::DistanceGrid<float>(
+            using Grid = collision::DistanceGrid<float>;
+            const auto num_points = size_x * size_y * size_z;
+            if (data.empty() or num_points == 0 or data.size() % num_points != 0)
+            {
+                throw std::invalid_argument(
+                    "Distance grid values must hold whole fields of the lattice size");
+            }
+
+            for (const auto value : data)
+            {
+                if (not Grid::finite(value))
+                {
+                    throw std::invalid_argument("Distance grid values must be finite");
+                }
+            }
+
+            // One shared buffer; each field points into it and keeps it alive.
+            const auto values = std::make_shared<const std::vector<float>>(std::move(data));
+            std::vector<std::shared_ptr<const float>> fields;
+            for (std::size_t start = 0; start < values->size(); start += num_points)
+            {
+                fields.emplace_back(values, values->data() + start);
+            }
+
+            return Grid(
                 origin_x,
                 origin_y,
                 origin_z,
@@ -461,7 +487,7 @@ namespace vamp::collision::factory
                 size_x,
                 size_y,
                 size_z,
-                std::make_shared<const std::vector<float>>(std::move(data)),
+                std::move(fields),
                 std::move(workspaces));
         }
 

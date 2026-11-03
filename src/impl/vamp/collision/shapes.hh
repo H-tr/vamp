@@ -328,9 +328,10 @@ namespace vamp::collision
     // and without some of its obstacles. Each field has a workspace, an axis-aligned box (by
     // default the lattice's box; a face may lie at infinity, stored as the largest float): a
     // sphere collides unless it lies wholly inside the workspace of the field it reads and the
-    // distance at its centre is at least its radius. Spheres read field 0 unless the robot selects another
-    // field; a grid without the selected field gives field 0. The values are shared, not copied, between the
-    // float environment and its vector copies.
+    // distance at its centre is at least its radius. Spheres read field 0 unless the robot selects
+    // another field; a grid without the selected field gives field 0. The grid does not copy the
+    // values: each field is a shared pointer to nx * ny * nz finite floats, which stay alive while
+    // any copy of the grid holds them (for example the caller's own array).
     template <typename DataT>
     struct DistanceGrid : public Shape<DataT>
     {
@@ -353,16 +354,16 @@ namespace vamp::collision
         std::int32_t ny;
         std::int32_t nz;
 
-        std::size_t num_fields;
-        std::shared_ptr<const std::vector<float>> data;  // num_fields * nx * ny * nz values
-        std::vector<Workspace> workspaces;               // one for each field
+        std::vector<std::shared_ptr<const float>> fields;  // nx * ny * nz values each
+        std::vector<Workspace> workspaces;                 // one for each field
 
         DistanceGrid() = default;
 
-        // ``workspaces`` holds one box for each field, or none for the lattice's box. Throws
-        // std::invalid_argument unless each axis has at least 2 lattice points (fewer than 2^31
-        // in all), the origin and spacing are finite with a positive spacing, ``data`` holds one
-        // or more whole fields of finite values, and each workspace has lower <= upper and no NaN.
+        // ``workspaces`` holds one box for each field, or none for the lattice's box. The values are
+        // not checked (the factory checks the values it copies). Throws std::invalid_argument
+        // unless each axis has at least 2 lattice points (fewer than 2^31 in all), the origin and
+        // spacing are finite with a positive spacing, there is at least one field and no field is
+        // null, and there is one workspace for each field, with lower <= upper and no NaN.
         explicit DistanceGrid(
             float x,
             float y,
@@ -373,7 +374,7 @@ namespace vamp::collision
             std::size_t nx,
             std::size_t ny,
             std::size_t nz,
-            std::shared_ptr<const std::vector<float>> data,
+            std::vector<std::shared_ptr<const float>> fields,
             std::vector<Workspace> workspaces = {})
           : Shape<DataT>()
           , x(x)
@@ -388,8 +389,7 @@ namespace vamp::collision
           , nx(static_cast<std::int32_t>(nx))
           , ny(static_cast<std::int32_t>(ny))
           , nz(static_cast<std::int32_t>(nz))
-          , num_fields(0)
-          , data(std::move(data))
+          , fields(std::move(fields))
           , workspaces(std::move(workspaces))
         {
             Shape<DataT>::min_distance = 0;
@@ -417,21 +417,20 @@ namespace vamp::collision
                 throw std::invalid_argument("A distance grid needs a positive spacing");
             }
 
-            if (not this->data or this->data->empty() or this->data->size() % num_points() != 0)
+            if (this->fields.empty())
             {
-                throw std::invalid_argument(
-                    "Distance grid values must hold whole fields of the lattice size");
+                throw std::invalid_argument("A distance grid needs at least one field");
             }
 
-            for (const auto value : *this->data)
+            for (const auto &field : this->fields)
             {
-                if (not finite(value))
+                if (not field)
                 {
-                    throw std::invalid_argument("Distance grid values must be finite");
+                    throw std::invalid_argument("A distance grid field cannot be null");
                 }
             }
 
-            num_fields = this->data->size() / num_points();
+            const auto num_fields = this->fields.size();
             if (this->workspaces.empty())
             {
                 const Workspace lattice = {
@@ -492,8 +491,7 @@ namespace vamp::collision
           , nx(other.nx)
           , ny(other.ny)
           , nz(other.nz)
-          , num_fields(other.num_fields)
-          , data(other.data)
+          , fields(other.fields)
           , workspaces(other.workspaces)
         {
         }
@@ -521,17 +519,22 @@ namespace vamp::collision
             return (bits(value) & 0x7fffffffU) > 0x7f800000U;
         }
 
+        inline auto num_fields() const noexcept -> std::size_t
+        {
+            return fields.size();
+        }
+
         // The field that a sphere selecting field ``index`` reads: ``index``, or 0 if the grid
         // has no such field.
         inline auto resolve(std::size_t index) const noexcept -> std::size_t
         {
-            return index < num_fields ? index : 0;
+            return index < fields.size() ? index : 0;
         }
 
         // The values of field ``index``.
         inline auto field(std::size_t index) const noexcept -> const float *
         {
-            return data->data() + resolve(index) * num_points();
+            return fields[resolve(index)].get();
         }
 
         // The workspace of field ``index``.
