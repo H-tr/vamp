@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <limits>
@@ -350,6 +351,9 @@ namespace vamp::collision
 
         DistanceGrid() = default;
 
+        // Throws std::invalid_argument unless each axis has at least 2 lattice points (fewer than
+        // 2^31 in all), the origin and spacing are finite with a positive spacing, and ``data``
+        // holds one or more whole fields of finite values.
         explicit DistanceGrid(
             float x,
             float y,
@@ -357,10 +361,9 @@ namespace vamp::collision
             float xs,
             float ys,
             float zs,
-            std::int32_t nx,
-            std::int32_t ny,
-            std::int32_t nz,
-            std::size_t num_fields,
+            std::size_t nx,
+            std::size_t ny,
+            std::size_t nz,
             std::shared_ptr<const std::vector<float>> data)
           : Shape<DataT>()
           , x(x)
@@ -372,13 +375,52 @@ namespace vamp::collision
           , xu(x + xs * static_cast<float>(nx - 1))
           , yu(y + ys * static_cast<float>(ny - 1))
           , zu(z + zs * static_cast<float>(nz - 1))
-          , nx(nx)
-          , ny(ny)
-          , nz(nz)
-          , num_fields(num_fields)
+          , nx(static_cast<std::int32_t>(nx))
+          , ny(static_cast<std::int32_t>(ny))
+          , nz(static_cast<std::int32_t>(nz))
+          , num_fields(0)
           , data(std::move(data))
         {
             Shape<DataT>::min_distance = 0;
+
+            if (nx < 2 or ny < 2 or nz < 2)
+            {
+                throw std::invalid_argument("A distance grid needs at least 2 lattice points per axis");
+            }
+
+            if (nx * ny * nz > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+            {
+                throw std::invalid_argument("A distance grid field needs fewer than 2^31 lattice points");
+            }
+
+            for (const auto value : {x, y, z, xs, ys, zs})
+            {
+                if (not std::isfinite(value))
+                {
+                    throw std::invalid_argument("A distance grid needs a finite origin and spacing");
+                }
+            }
+
+            if (not(xs > 0.F and ys > 0.F and zs > 0.F))
+            {
+                throw std::invalid_argument("A distance grid needs a positive spacing");
+            }
+
+            if (not this->data or this->data->empty() or this->data->size() % num_points() != 0)
+            {
+                throw std::invalid_argument(
+                    "Distance grid values must hold whole fields of the lattice size");
+            }
+
+            for (const auto value : *this->data)
+            {
+                if (not std::isfinite(value))
+                {
+                    throw std::invalid_argument("Distance grid values must be finite");
+                }
+            }
+
+            num_fields = this->data->size() / num_points();
         }
 
         template <typename OtherDataT>

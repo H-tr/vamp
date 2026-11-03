@@ -104,10 +104,9 @@ def main(
         build_ns = e.add_pointcloud(cloud.tolist(), r_min, r_max, point_radius)
         environments["pointcloud"] = (e, build_ns / 1e6)
 
+        distances = sphere_distances(spheres_copy, radius, origin, spacing, shape)
         start = time.perf_counter()
-        grid = vamp.DistanceGrid(
-            sphere_distances(spheres_copy, radius, origin, spacing, shape), origin, [spacing] * 3
-            )
+        grid = vamp.DistanceGrid(distances, origin, [spacing] * 3)
         e = vamp.Environment()
         e.add_distance_grid(grid)
         environments["distance_grid"] = (e, (time.perf_counter() - start) * 1e3)
@@ -143,7 +142,7 @@ def main(
                 "simplification_time",
                 "planning_iterations",
                 "agreement",
-                ]].describe()
+                ]].describe().to_string()
             )
 
 

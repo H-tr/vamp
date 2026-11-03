@@ -1,11 +1,7 @@
 #pragma once
 
 #include <array>
-#include <cmath>
-#include <cstdint>
-#include <limits>
 #include <memory>
-#include <stdexcept>
 #include <vector>
 #include <vamp/vector.hh>
 #include <vamp/collision/shapes.hh>
@@ -437,6 +433,7 @@ namespace vamp::collision::factory
            - Lattice size along each of the XYZ axes (at least 2 points each)
            - Values: one or more fields of signed distances, each row-major with the Z index
              contiguous, one after another
+         * Throws std::invalid_argument for a malformed grid (see collision::DistanceGrid).
          */
         inline static auto flat(
             float origin_x,
@@ -450,48 +447,6 @@ namespace vamp::collision::factory
             std::size_t size_z,
             std::vector<float> data) -> collision::DistanceGrid<float>
         {
-            for (const auto size : {size_x, size_y, size_z})
-            {
-                if (size < 2)
-                {
-                    throw std::invalid_argument("A distance grid needs at least 2 lattice points per axis");
-                }
-            }
-
-            const auto num_points = size_x * size_y * size_z;
-            if (num_points > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
-            {
-                throw std::invalid_argument("A distance grid field needs fewer than 2^31 lattice points");
-            }
-
-            for (const auto value : {origin_x, origin_y, origin_z, spacing_x, spacing_y, spacing_z})
-            {
-                if (not std::isfinite(value))
-                {
-                    throw std::invalid_argument("A distance grid needs a finite origin and spacing");
-                }
-            }
-
-            if (not(spacing_x > 0.F and spacing_y > 0.F and spacing_z > 0.F))
-            {
-                throw std::invalid_argument("A distance grid needs a positive spacing");
-            }
-
-            if (data.empty() or data.size() % num_points != 0)
-            {
-                throw std::invalid_argument(
-                    "Distance grid values must hold whole fields of the lattice size");
-            }
-
-            for (const auto value : data)
-            {
-                if (not std::isfinite(value))
-                {
-                    throw std::invalid_argument("Distance grid values must be finite");
-                }
-            }
-
-            const auto num_fields = data.size() / num_points;
             return collision::DistanceGrid<float>(
                 origin_x,
                 origin_y,
@@ -499,10 +454,9 @@ namespace vamp::collision::factory
                 spacing_x,
                 spacing_y,
                 spacing_z,
-                static_cast<std::int32_t>(size_x),
-                static_cast<std::int32_t>(size_y),
-                static_cast<std::int32_t>(size_z),
-                num_fields,
+                size_x,
+                size_y,
+                size_z,
                 std::make_shared<const std::vector<float>>(std::move(data)));
         }
 
