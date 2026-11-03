@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -320,16 +321,21 @@ namespace vamp::collision
 
     // A distance grid: signed distances (positive in free space) at the points of a regular
     // lattice, read by trilinear interpolation. The lattice starts at (x, y, z) with spacing
-    // (xs, ys, zs) and has nx * ny * nz points; each field is stored row-major with the z index
-    // contiguous. The box spanned by the lattice, from (x, y, z) to (xu, yu, zu), is the
-    // workspace: outside it, the distance is minus the distance to the box. A grid can hold
-    // several fields on the same lattice, for example a scene with and without some of its
-    // obstacles. Spheres read field 0 unless the robot selects another field; a grid without
-    // the selected field gives field 0. The fields are shared, not copied, between the float
+    // (xs, ys, zs) and has nx * ny * nz points, up to (xu, yu, zu); each field is stored row-major
+    // with the z index contiguous. Outside the lattice, the distance is read at the nearest
+    // lattice point. A grid can hold several fields on the same lattice, for example a scene with
+    // and without some of its obstacles. Each field has a workspace, an axis-aligned box (by
+    // default the lattice's box; a face may lie at infinity): a sphere collides unless it lies
+    // wholly inside the workspace of the field it reads and the distance at its centre is at least
+    // its radius. Spheres read field 0 unless the robot selects another field; a grid without the
+    // selected field gives field 0. The values are shared, not copied, between the float
     // environment and its vector copies.
     template <typename DataT>
     struct DistanceGrid : public Shape<DataT>
     {
+        // A workspace box: its lower corner (x, y, z), then its upper corner.
+        using Workspace = std::array<float, 6>;
+
         DataT x;  // first lattice point
         DataT y;
         DataT z;
@@ -348,12 +354,14 @@ namespace vamp::collision
 
         std::size_t num_fields;
         std::shared_ptr<const std::vector<float>> data;  // num_fields * nx * ny * nz values
+        std::vector<Workspace> workspaces;               // one for each field
 
         DistanceGrid() = default;
 
-        // Throws std::invalid_argument unless each axis has at least 2 lattice points (fewer than
-        // 2^31 in all), the origin and spacing are finite with a positive spacing, and ``data``
-        // holds one or more whole fields of finite values.
+        // ``workspaces`` holds one box for each field, or none for the lattice's box. Throws
+        // std::invalid_argument unless each axis has at least 2 lattice points (fewer than 2^31
+        // in all), the origin and spacing are finite with a positive spacing, ``data`` holds one
+        // or more whole fields of finite values, and each workspace has lower <= upper and no NaN.
         explicit DistanceGrid(
             float x,
             float y,
@@ -364,7 +372,8 @@ namespace vamp::collision
             std::size_t nx,
             std::size_t ny,
             std::size_t nz,
-            std::shared_ptr<const std::vector<float>> data)
+            std::shared_ptr<const std::vector<float>> data,
+            std::vector<Workspace> workspaces = {})
           : Shape<DataT>()
           , x(x)
           , y(y)
@@ -380,6 +389,7 @@ namespace vamp::collision
           , nz(static_cast<std::int32_t>(nz))
           , num_fields(0)
           , data(std::move(data))
+          , workspaces(std::move(workspaces))
         {
             Shape<DataT>::min_distance = 0;
 
@@ -421,6 +431,33 @@ namespace vamp::collision
             }
 
             num_fields = this->data->size() / num_points();
+            if (this->workspaces.empty())
+            {
+                const Workspace lattice = {
+                    x,
+                    y,
+                    z,
+                    x + xs * static_cast<float>(nx - 1),
+                    y + ys * static_cast<float>(ny - 1),
+                    z + zs * static_cast<float>(nz - 1)};
+                this->workspaces.assign(num_fields, lattice);
+            }
+
+            if (this->workspaces.size() != num_fields)
+            {
+                throw std::invalid_argument("A distance grid needs one workspace for each field");
+            }
+
+            for (const auto &box : this->workspaces)
+            {
+                for (auto axis = 0U; axis < 3; ++axis)
+                {
+                    if (not(box[axis] <= box[axis + 3]))
+                    {
+                        throw std::invalid_argument("A distance grid workspace needs lower <= upper");
+                    }
+                }
+            }
         }
 
         template <typename OtherDataT>
@@ -440,6 +477,7 @@ namespace vamp::collision
           , nz(other.nz)
           , num_fields(other.num_fields)
           , data(other.data)
+          , workspaces(other.workspaces)
         {
         }
 
@@ -448,10 +486,23 @@ namespace vamp::collision
             return static_cast<std::size_t>(nx) * static_cast<std::size_t>(ny) * static_cast<std::size_t>(nz);
         }
 
-        // The values of field ``index``, or of field 0 if the grid has no such field.
+        // The field that a sphere selecting field ``index`` reads: ``index``, or 0 if the grid
+        // has no such field.
+        inline auto resolve(std::size_t index) const noexcept -> std::size_t
+        {
+            return index < num_fields ? index : 0;
+        }
+
+        // The values of field ``index``.
         inline auto field(std::size_t index) const noexcept -> const float *
         {
-            return data->data() + (index < num_fields ? index : 0) * num_points();
+            return data->data() + resolve(index) * num_points();
+        }
+
+        // The workspace of field ``index``.
+        inline auto workspace(std::size_t index) const noexcept -> const Workspace &
+        {
+            return workspaces[resolve(index)];
         }
     };
 

@@ -149,7 +149,7 @@ namespace vamp
 
         for (const auto &eg : e.distance_grids)
         {
-            if (not collision::sphere_distance_grid(eg, eg.field(Field), sx, sy, sz, sr).test_zero())
+            if (not collision::sphere_distance_grid(eg, Field, sx, sy, sz, sr).test_zero())
             {
                 return true;
             }
@@ -291,7 +291,7 @@ namespace vamp
 
         for (const auto &eg : e.distance_grids)
         {
-            if (not collision::sphere_distance_grid(eg, eg.field(0), sx, sy, sz, sr).test_zero())
+            if (not collision::sphere_distance_grid(eg, 0, sx, sy, sz, sr).test_zero())
             {
                 objects.emplace_back(eg.name);
             }

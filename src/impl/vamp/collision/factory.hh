@@ -433,6 +433,8 @@ namespace vamp::collision::factory
            - Lattice size along each of the XYZ axes (at least 2 points each)
            - Values: one or more fields of signed distances, each row-major with the Z index
              contiguous, one after another
+           - Optionally, the workspace of each field as its lower and upper corners (a face may lie
+             at infinity); by default the lattice's box
          * Throws std::invalid_argument for a malformed grid (see collision::DistanceGrid).
          */
         inline static auto flat(
@@ -445,7 +447,9 @@ namespace vamp::collision::factory
             std::size_t size_x,
             std::size_t size_y,
             std::size_t size_z,
-            std::vector<float> data) -> collision::DistanceGrid<float>
+            std::vector<float> data,
+            std::vector<collision::DistanceGrid<float>::Workspace> workspaces = {})
+            -> collision::DistanceGrid<float>
         {
             return collision::DistanceGrid<float>(
                 origin_x,
@@ -457,14 +461,17 @@ namespace vamp::collision::factory
                 size_x,
                 size_y,
                 size_z,
-                std::make_shared<const std::vector<float>>(std::move(data)));
+                std::make_shared<const std::vector<float>>(std::move(data)),
+                std::move(workspaces));
         }
 
         inline static auto array(
             ConstArrayRef origin,
             ConstArrayRef spacing,
             const std::array<std::size_t, 3> &size,
-            std::vector<float> data) -> collision::DistanceGrid<float>
+            std::vector<float> data,
+            std::vector<collision::DistanceGrid<float>::Workspace> workspaces = {})
+            -> collision::DistanceGrid<float>
         {
             return flat(
                 origin[0],
@@ -476,7 +483,8 @@ namespace vamp::collision::factory
                 size[0],
                 size[1],
                 size[2],
-                std::move(data));
+                std::move(data),
+                std::move(workspaces));
         }
     }  // namespace distance_grid
 

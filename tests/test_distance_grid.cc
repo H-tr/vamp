@@ -66,13 +66,13 @@ namespace
         return origin[axis] + spacing[axis] * static_cast<float>(size[axis] - 1);
     }
 
-    // Reference trilinear distance in double precision, minus the distance to the box outside it.
+    // Reference trilinear distance in double precision, read at the nearest lattice point outside
+    // the lattice.
     auto reference(const std::vector<float> &values, double x, double y, double z) -> double
     {
         const std::array<double, 3> p = {x, y, z};
         std::array<std::size_t, 3> lower{};
         std::array<double, 3> fraction{};
-        double outside = 0.0;
         for (auto axis = 0U; axis < 3; ++axis)
         {
             const double last = static_cast<double>(size[axis] - 1);
@@ -81,13 +81,6 @@ namespace
             const double f = std::min(std::floor(k), last - 1.0);
             lower[axis] = static_cast<std::size_t>(f);
             fraction[axis] = k - f;
-            const double over = std::max({origin[axis] - p[axis], p[axis] - upper(axis), 0.0});
-            outside += over * over;
-        }
-
-        if (outside > 0.0)
-        {
-            return -std::sqrt(outside);
         }
 
         double value = 0.0;
@@ -108,9 +101,28 @@ namespace
         return value;
     }
 
-    auto make_grid(std::vector<float> values) -> vc::DistanceGrid<float>
+    // Reference clearance: the distance minus the radius, at most the room inside the lattice's box.
+    auto reference_clearance(const std::vector<float> &values, double x, double y, double z, double r)
+        -> double
     {
-        return vf::distance_grid::array(origin, spacing, size, std::move(values));
+        const std::array<double, 3> p = {x, y, z};
+        double clearance = reference(values, x, y, z) - r;
+        for (auto axis = 0U; axis < 3; ++axis)
+        {
+            clearance = std::min({clearance, p[axis] - origin[axis] - r, upper(axis) - p[axis] - r});
+        }
+
+        return clearance;
+    }
+
+    using Workspace = vc::DistanceGrid<float>::Workspace;
+    constexpr auto inf = std::numeric_limits<float>::infinity();
+    constexpr Workspace unbounded = {-inf, -inf, -inf, inf, inf, inf};
+
+    auto make_grid(std::vector<float> values, std::vector<Workspace> workspaces = {})
+        -> vc::DistanceGrid<float>
+    {
+        return vf::distance_grid::array(origin, spacing, size, std::move(values), std::move(workspaces));
     }
 
     auto clearances(
@@ -121,8 +133,7 @@ namespace
         const Lanes &zs,
         const Lanes &rs) -> Lanes
     {
-        return vc::sphere_distance_grid(
-                   grid, grid.field(field), V(xs.data()), V(ys.data()), V(zs.data()), V(rs.data()))
+        return vc::sphere_distance_grid(grid, field, V(xs.data()), V(ys.data()), V(zs.data()), V(rs.data()))
             .to_array();
     }
 }  // namespace
@@ -130,7 +141,7 @@ namespace
 TEST_CASE("Distance grid interpolation is exact for linear fields", "[collision][distance_grid]")
 {
     const auto linear = [](float x, float y, float z) { return 0.3F * x - 0.7F * y + 1.1F * z + 0.2F; };
-    const auto grid = make_grid(sample_field(linear));
+    const auto grid = make_grid(sample_field(linear), {unbounded});
     const vc::DistanceGrid<V> simd_grid(grid);
 
     std::mt19937 rng(7);
@@ -165,8 +176,7 @@ TEST_CASE("Distance grid SIMD lanes match a scalar trilinear reference", "[colli
     const auto grid = make_grid(values);
     const vc::DistanceGrid<V> simd_grid(grid);
 
-    // Queries reach past every face of the box, and some land exactly on lattice points (the
-    // upper faces are left out: rounding decides on which side of them a point lies).
+    // Queries reach past every face of the lattice, and some land exactly on lattice points.
     std::uniform_real_distribution<float> qx(origin[0] - 0.3F, upper(0) + 0.3F);
     std::uniform_real_distribution<float> qy(origin[1] - 0.3F, upper(1) + 0.3F);
     std::uniform_real_distribution<float> qz(origin[2] - 0.3F, upper(2) + 0.3F);
@@ -186,8 +196,7 @@ TEST_CASE("Distance grid SIMD lanes match a scalar trilinear reference", "[colli
             rs[lane] = ur(rng);
             if (pick(rng) == 0)
             {
-                const auto p = lattice_point(
-                    pick(rng) % (size[0] - 1), pick(rng) % (size[1] - 1), pick(rng) % (size[2] - 1));
+                const auto p = lattice_point(pick(rng) % size[0], pick(rng) % size[1], pick(rng) % size[2]);
                 xs[lane] = p[0];
                 ys[lane] = p[1];
                 zs[lane] = p[2];
@@ -197,66 +206,55 @@ TEST_CASE("Distance grid SIMD lanes match a scalar trilinear reference", "[colli
         const auto actual = clearances(simd_grid, 0, xs, ys, zs, rs);
         for (auto lane = 0U; lane < xs.size(); ++lane)
         {
-            const std::array<float, 3> p = {xs[lane], ys[lane], zs[lane]};
-            bool outside = false;
-            bool on_face = false;
-            for (auto axis = 0U; axis < 3; ++axis)
+            const auto expected = reference_clearance(values, xs[lane], ys[lane], zs[lane], rs[lane]);
+            CAPTURE(xs[lane], ys[lane], zs[lane], rs[lane], actual[lane], expected);
+            REQUIRE(actual[lane] == Approx(expected).margin(1e-5));
+            if (std::abs(expected) > 1e-5)
             {
-                outside = outside or p[axis] < origin[axis] or p[axis] > upper(axis);
-                on_face = on_face or std::abs(p[axis] - upper(axis)) < 1e-5F;
+                REQUIRE((actual[lane] < 0.F) == (expected < 0.0));
             }
 
-            if (on_face)
-            {
-                continue;
-            }
-
-            const auto expected = reference(values, p[0], p[1], p[2]) - rs[lane];
-            CAPTURE(p, rs[lane], actual[lane], expected);
-            if (outside)
-            {
-                // The distance to the box uses VAMP's square root, which is approximate on AVX.
-                REQUIRE(actual[lane] < 0.F);
-                REQUIRE(actual[lane] == Approx(expected).epsilon(1e-3));
-            }
-            else
-            {
-                REQUIRE(actual[lane] == Approx(expected).margin(1e-5));
-                if (std::abs(expected) > 1e-5)
-                {
-                    REQUIRE((actual[lane] < 0.F) == (expected < 0.0));
-                }
-            }
-
-            num_outside += outside;
+            num_outside += xs[lane] < origin[0] or xs[lane] > upper(0) or zs[lane] > upper(2);
             (expected < 0.0 ? num_colliding : num_free) += 1;
         }
     }
 
-    // Make sure the fuzzing covers the box faces and both outcomes
+    // Make sure the fuzzing covers the faces and both outcomes
     REQUIRE(num_outside > 100);
     REQUIRE(num_colliding > 100);
     REQUIRE(num_free > 100);
 }
 
-TEST_CASE("Spheres with their centre outside the grid's box collide", "[collision][distance_grid]")
+TEST_CASE("Spheres collide unless they lie wholly inside the workspace", "[collision][distance_grid]")
 {
     vc::Environment<float> env;
     env.distance_grids.emplace_back(make_grid(sample_field([](float, float, float) { return 10.F; })));
     const vc::Environment<V> simd_env(env);
 
-    const auto collides = [&](float x, float y, float z, float r)
-    { return vamp::sphere_environment_in_collision(simd_env, V::fill(x), V::fill(y), V::fill(z), r); };
+    const auto collides = [&](const vc::Environment<V> &e, float x, float y, float z, float r)
+    { return vamp::sphere_environment_in_collision(e, V::fill(x), V::fill(y), V::fill(z), r); };
 
-    // Far from every obstacle, free up to the faces of the box: only the centre must stay inside.
-    REQUIRE_FALSE(collides(origin[0], origin[1], origin[2], 0.5F));
-    REQUIRE_FALSE(collides(upper(0) - 1e-4F, upper(1) - 1e-4F, upper(2) - 1e-4F, 0.5F));
-    REQUIRE(collides(origin[0] - 1e-3F, 0.8F, 0.F, 0.F));
-    REQUIRE(collides(upper(0) + 1e-3F, 0.8F, 0.F, 0.F));
-    REQUIRE(collides(-0.5F, origin[1] - 1e-3F, 0.F, 0.F));
-    REQUIRE(collides(-0.5F, upper(1) + 1e-3F, 0.F, 0.F));
-    REQUIRE(collides(-0.5F, 0.8F, origin[2] - 1e-3F, 0.F));
-    REQUIRE(collides(-0.5F, 0.8F, upper(2) + 1e-3F, 0.F));
+    // Far from every obstacle: free while the whole sphere stays in the lattice's box.
+    const float r = 0.04F;
+    REQUIRE_FALSE(collides(simd_env, origin[0] + r + 1e-5F, origin[1] + r + 1e-5F, origin[2] + r + 1e-5F, r));
+    REQUIRE_FALSE(collides(simd_env, upper(0) - r - 1e-5F, upper(1) - r - 1e-5F, upper(2) - r - 1e-5F, r));
+    REQUIRE(collides(simd_env, origin[0] + r - 1e-3F, 0.8F, 0.F, r));
+    REQUIRE(collides(simd_env, upper(0) - r + 1e-3F, 0.8F, 0.F, r));
+    REQUIRE(collides(simd_env, -0.5F, origin[1] + r - 1e-3F, 0.F, r));
+    REQUIRE(collides(simd_env, -0.5F, upper(1) - r + 1e-3F, 0.F, r));
+    REQUIRE(collides(simd_env, -0.5F, 0.8F, origin[2] + r - 1e-3F, r));
+    REQUIRE(collides(simd_env, -0.5F, 0.8F, upper(2) - r + 1e-3F, r));
+
+    // A workspace open below and at the sides: a sphere below the lattice reads its bottom layer,
+    // and the top face still holds.
+    vc::Environment<float> open;
+    const Workspace below = {-inf, -inf, -inf, inf, inf, upper(2)};
+    open.distance_grids.emplace_back(
+        make_grid(sample_field([](float, float, float z) { return 1.F + z; }), {below}));
+    const vc::Environment<V> simd_open(open);
+    REQUIRE_FALSE(collides(simd_open, -0.5F, 0.8F, -3.F, 0.7F));
+    REQUIRE(collides(simd_open, -0.5F, 0.8F, -3.F, 0.8F));
+    REQUIRE(collides(simd_open, -0.5F, 0.8F, upper(2) - 0.05F, 0.06F));
 }
 
 TEST_CASE("Spheres read the distance grid field that the robot selects", "[collision][distance_grid]")
@@ -271,7 +269,7 @@ TEST_CASE("Spheres read the distance grid field that the robot selects", "[colli
     REQUIRE(env.distance_grids.front().num_fields == 2);
     const vc::Environment<V> simd_env(env);
 
-    const auto x = V::fill(-0.5F);
+    const auto x = V::fill(-0.6F);
     const auto y = V::fill(0.8F);
     const auto z = V::fill(0.05F);
     REQUIRE(vamp::sphere_environment_in_collision(simd_env, x, y, z, 0.1F));
@@ -288,9 +286,8 @@ TEST_CASE("Spheres read the distance grid field that the robot selects", "[colli
     // Debug queries name the grid that a sphere collides with.
     env.distance_grids.front().name = "scene";
     const vc::Environment<V> named(env);
-    REQUIRE(
-        vamp::sphere_environment_get_collisions<V>(named, x, y, z, 0.1F) == std::vector<std::string>{"scen"
-                                                                                                     "e"});
+    const std::vector<std::string> scene = {"scene"};
+    REQUIRE(vamp::sphere_environment_get_collisions<V>(named, x, y, z, 0.1F) == scene);
 }
 
 TEST_CASE("Vector environments share the distance grid values", "[collision][distance_grid]")
@@ -325,4 +322,15 @@ TEST_CASE("Distance grid factory rejects malformed grids", "[collision][distance
     REQUIRE_THROWS_AS(
         vf::distance_grid::array({std::numeric_limits<float>::quiet_NaN(), 0.F, 0.F}, spacing, size, values),
         std::invalid_argument);
+
+    // One workspace for each field, each with lower <= upper and no NaN.
+    REQUIRE_NOTHROW(make_grid(values, {unbounded}));
+    REQUIRE_THROWS_AS(make_grid(values, {unbounded, unbounded}), std::invalid_argument);
+    REQUIRE_THROWS_AS(make_grid(values, {{0.F, 0.F, 1.F, 1.F, 1.F, 0.F}}), std::invalid_argument);
+    REQUIRE_THROWS_AS(
+        make_grid(values, {{std::numeric_limits<float>::quiet_NaN(), 0.F, 0.F, 1.F, 1.F, 1.F}}),
+        std::invalid_argument);
+    REQUIRE(
+        make_grid(values).workspaces ==
+        std::vector<Workspace>{{origin[0], origin[1], origin[2], upper(0), upper(1), upper(2)}});
 }
