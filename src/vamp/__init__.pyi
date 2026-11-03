@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 
 from vamp._core import Cuboid as Cuboid
 from vamp._core import Cylinder as Cylinder
+from vamp._core import DistanceGrid as DistanceGrid
 from vamp._core import Environment as Environment
 from vamp._core import PRMNeighborParams as PRMNeighborParams
 from vamp._core import PRMSettings as PRMSettings

@@ -108,6 +108,68 @@ void vamp::binding::init_environment(nanobind::module_ &pymodule)
         .def_ro("zs", &vc::HeightField<float>::zs)
         .def_ro("data", &vc::HeightField<float>::data);
 
+    nb::class_<vc::DistanceGrid<float>>(pymodule, "DistanceGrid")
+        .def(
+            "__init__",
+            [](vc::DistanceGrid<float> *q,
+               const nb::ndarray<const float, nb::c_contig, nb::device::cpu> &fields,
+               const std::array<float, 3> &origin,
+               const std::array<float, 3> &spacing,
+               const std::vector<std::array<float, 3>> &workspace_min,
+               const std::vector<std::array<float, 3>> &workspace_max)
+            {
+                if (fields.ndim() != 3 and fields.ndim() != 4)
+                {
+                    throw std::invalid_argument(
+                        "Distance grid fields must be an (X, Y, Z) or (fields, X, Y, Z) array");
+                }
+
+                if (workspace_min.size() != workspace_max.size())
+                {
+                    throw std::invalid_argument("Give as many workspace lower corners as upper corners");
+                }
+
+                std::vector<vc::DistanceGrid<float>::Workspace> workspaces;
+                for (auto i = 0U; i < workspace_min.size(); ++i)
+                {
+                    const auto &lo = workspace_min[i];
+                    const auto &hi = workspace_max[i];
+                    workspaces.push_back({lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]});
+                }
+
+                const auto axis = fields.ndim() - 3;
+                const std::array<std::size_t, 3> size{
+                    fields.shape(axis), fields.shape(axis + 1), fields.shape(axis + 2)};
+                std::vector<float> data(fields.data(), fields.data() + fields.size());
+                new (q) vc::DistanceGrid<float>(
+                    vf::distance_grid::array(origin, spacing, size, std::move(data), std::move(workspaces)));
+            },
+            "fields"_a,
+            "origin"_a,
+            "spacing"_a,
+            "workspace_min"_a = std::vector<std::array<float, 3>>{},
+            "workspace_max"_a = std::vector<std::array<float, 3>>{},
+            "Constructor from signed distances (positive in free space) at the points of a regular lattice: "
+            "one field as an (X, Y, Z) float32 array, or several fields as a (fields, X, Y, Z) array, with "
+            "the first lattice point and the spacing along each axis. Optionally, the workspace of each "
+            "field as lists of lower and upper corners (a face may lie at infinity); by default the "
+            "lattice's box. A sphere collides unless it lies wholly inside the workspace of the field it "
+            "reads and the distance at its centre is at least its radius.")
+        .def_prop_ro(
+            "origin", [](const vc::DistanceGrid<float> &g) { return std::array<float, 3>{g.x, g.y, g.z}; })
+        .def_prop_ro(
+            "spacing",
+            [](const vc::DistanceGrid<float> &g) { return std::array<float, 3>{g.xs, g.ys, g.zs}; })
+        .def_prop_ro(
+            "shape",
+            [](const vc::DistanceGrid<float> &g) { return std::array<std::int32_t, 3>{g.nx, g.ny, g.nz}; })
+        .def_prop_ro("num_fields", &vc::DistanceGrid<float>::num_fields)
+        .def_prop_ro(
+            "workspaces",
+            [](const vc::DistanceGrid<float> &g) { return g.workspaces; },
+            "The workspace of each field: its lower corner, then its upper corner.")
+        .def_rw("name", &vc::DistanceGrid<float>::name);
+
     nb::class_<vc::ConvexPolytope<float>>(pymodule, "ConvexPolytope")
         .def(
             "__init__",
@@ -245,6 +307,10 @@ void vamp::binding::init_environment(nanobind::module_ &pymodule)
             [](vc::Environment<float> &e, const vc::HeightField<float> &s)
             { e.heightfields.emplace_back(s); })
         .def(
+            "add_distance_grid",
+            [](vc::Environment<float> &e, const vc::DistanceGrid<float> &g)
+            { e.distance_grids.emplace_back(g); })
+        .def(
             "add_polytope",
             [](vc::Environment<float> &e, const vc::ConvexPolytope<float> &p)
             {
@@ -273,6 +339,7 @@ void vamp::binding::init_environment(nanobind::module_ &pymodule)
         .def_ro("capsules", &vc::Environment<float>::capsules)
         .def_ro("z_aligned_capsules", &vc::Environment<float>::z_aligned_capsules)
         .def_ro("heightfields", &vc::Environment<float>::heightfields)
+        .def_ro("distance_grids", &vc::Environment<float>::distance_grids)
         .def_ro("pointclouds", &vc::Environment<float>::pointclouds);
 
     pymodule.def(

@@ -1,5 +1,10 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <limits>
@@ -312,6 +317,230 @@ namespace vamp::collision
           , yd2(other.yd2)
           , data(other.data)
         {
+        }
+    };
+
+    // A distance grid: signed distances (positive in free space) at the points of a regular
+    // lattice, read by trilinear interpolation. The lattice starts at (x, y, z) with spacing
+    // (xs, ys, zs) and has nx * ny * nz points, up to (xu, yu, zu); each field is stored row-major
+    // with the z index contiguous. Outside the lattice, the distance is read at the nearest
+    // lattice point. A grid can hold several fields on the same lattice, for example a scene with
+    // and without some of its obstacles. Each field has a workspace, an axis-aligned box (by
+    // default the lattice's box; a face may lie at infinity, stored as the largest float): a
+    // sphere collides unless it lies wholly inside the workspace of the field it reads and the
+    // distance at its centre is at least its radius. Spheres read field 0 unless the robot selects
+    // another field; a grid without the selected field gives field 0. The grid does not copy the
+    // values: each field is a shared pointer to nx * ny * nz finite floats, which stay alive while
+    // any copy of the grid holds them (for example the caller's own array).
+    template <typename DataT>
+    struct DistanceGrid : public Shape<DataT>
+    {
+        // A workspace box: its lower corner (x, y, z), then its upper corner.
+        using Workspace = std::array<float, 6>;
+
+        DataT x;  // first lattice point
+        DataT y;
+        DataT z;
+
+        DataT xs;  // lattice spacing
+        DataT ys;
+        DataT zs;
+
+        DataT xu;  // last lattice point
+        DataT yu;
+        DataT zu;
+
+        std::int32_t nx;  // lattice size
+        std::int32_t ny;
+        std::int32_t nz;
+
+        std::vector<std::shared_ptr<const float>> fields;  // nx * ny * nz values each
+        std::vector<Workspace> workspaces;                 // one for each field
+
+        DistanceGrid() = default;
+
+        // ``workspaces`` holds one box for each field, or none for the lattice's box. The values are
+        // not checked (the factory checks the values it copies). Throws std::invalid_argument
+        // unless each axis has at least 2 lattice points (fewer than 2^31 in all), the origin and
+        // spacing are finite with a positive spacing, there is at least one field and no field is
+        // null, and there is one workspace for each field, with lower <= upper and no NaN.
+        explicit DistanceGrid(
+            float x,
+            float y,
+            float z,
+            float xs,
+            float ys,
+            float zs,
+            std::size_t nx,
+            std::size_t ny,
+            std::size_t nz,
+            std::vector<std::shared_ptr<const float>> fields,
+            std::vector<Workspace> workspaces = {})
+          : Shape<DataT>()
+          , x(x)
+          , y(y)
+          , z(z)
+          , xs(xs)
+          , ys(ys)
+          , zs(zs)
+          , xu(x + xs * static_cast<float>(nx - 1))
+          , yu(y + ys * static_cast<float>(ny - 1))
+          , zu(z + zs * static_cast<float>(nz - 1))
+          , nx(static_cast<std::int32_t>(nx))
+          , ny(static_cast<std::int32_t>(ny))
+          , nz(static_cast<std::int32_t>(nz))
+          , fields(std::move(fields))
+          , workspaces(std::move(workspaces))
+        {
+            Shape<DataT>::min_distance = 0;
+
+            if (nx < 2 or ny < 2 or nz < 2)
+            {
+                throw std::invalid_argument("A distance grid needs at least 2 lattice points per axis");
+            }
+
+            if (nx * ny * nz > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+            {
+                throw std::invalid_argument("A distance grid field needs fewer than 2^31 lattice points");
+            }
+
+            for (const auto value : {x, y, z, xs, ys, zs})
+            {
+                if (not finite(value))
+                {
+                    throw std::invalid_argument("A distance grid needs a finite origin and spacing");
+                }
+            }
+
+            if (not(xs > 0.F and ys > 0.F and zs > 0.F))
+            {
+                throw std::invalid_argument("A distance grid needs a positive spacing");
+            }
+
+            if (this->fields.empty())
+            {
+                throw std::invalid_argument("A distance grid needs at least one field");
+            }
+
+            for (const auto &field : this->fields)
+            {
+                if (not field)
+                {
+                    throw std::invalid_argument("A distance grid field cannot be null");
+                }
+            }
+
+            const auto num_fields = this->fields.size();
+            if (this->workspaces.empty())
+            {
+                const Workspace lattice = {
+                    x,
+                    y,
+                    z,
+                    x + xs * static_cast<float>(nx - 1),
+                    y + ys * static_cast<float>(ny - 1),
+                    z + zs * static_cast<float>(nz - 1)};
+                this->workspaces.assign(num_fields, lattice);
+            }
+
+            if (this->workspaces.size() != num_fields)
+            {
+                throw std::invalid_argument("A distance grid needs one workspace for each field");
+            }
+
+            // A face at infinity becomes the largest float, so the checks hold under
+            // -ffinite-math-only.
+            for (auto &box : this->workspaces)
+            {
+                for (auto &bound : box)
+                {
+                    if (is_nan(bound))
+                    {
+                        throw std::invalid_argument("A distance grid workspace cannot hold NaN");
+                    }
+
+                    if (not finite(bound))
+                    {
+                        bound = (bits(bound) >> 31U) != 0 ? -std::numeric_limits<float>::max() :
+                                                            std::numeric_limits<float>::max();
+                    }
+                }
+
+                for (auto axis = 0U; axis < 3; ++axis)
+                {
+                    if (box[axis] > box[axis + 3])
+                    {
+                        throw std::invalid_argument("A distance grid workspace needs lower <= upper");
+                    }
+                }
+            }
+        }
+
+        template <typename OtherDataT>
+        explicit DistanceGrid(const DistanceGrid<OtherDataT> &other)
+          : Shape<DataT>(other)
+          , x(other.x)
+          , y(other.y)
+          , z(other.z)
+          , xs(other.xs)
+          , ys(other.ys)
+          , zs(other.zs)
+          , xu(other.xu)
+          , yu(other.yu)
+          , zu(other.zu)
+          , nx(other.nx)
+          , ny(other.ny)
+          , nz(other.nz)
+          , fields(other.fields)
+          , workspaces(other.workspaces)
+        {
+        }
+
+        inline auto num_points() const noexcept -> std::size_t
+        {
+            return static_cast<std::size_t>(nx) * static_cast<std::size_t>(ny) * static_cast<std::size_t>(nz);
+        }
+
+        // Tests on the bits, which hold under -ffinite-math-only (std::isfinite does not).
+        inline static auto bits(float value) noexcept -> std::uint32_t
+        {
+            std::uint32_t out;
+            std::memcpy(&out, &value, sizeof(out));
+            return out;
+        }
+
+        inline static auto finite(float value) noexcept -> bool
+        {
+            return (bits(value) & 0x7f800000U) != 0x7f800000U;
+        }
+
+        inline static auto is_nan(float value) noexcept -> bool
+        {
+            return (bits(value) & 0x7fffffffU) > 0x7f800000U;
+        }
+
+        inline auto num_fields() const noexcept -> std::size_t
+        {
+            return fields.size();
+        }
+
+        // The field that a sphere selecting field ``index`` reads: ``index``, or 0 if the grid
+        // has no such field.
+        inline auto resolve(std::size_t index) const noexcept -> std::size_t
+        {
+            return index < fields.size() ? index : 0;
+        }
+
+        // The values of field ``index``.
+        inline auto field(std::size_t index) const noexcept -> const float *
+        {
+            return fields[resolve(index)].get();
+        }
+
+        // The workspace of field ``index``.
+        inline auto workspace(std::size_t index) const noexcept -> const Workspace &
+        {
+            return workspaces[resolve(index)];
         }
     };
 
