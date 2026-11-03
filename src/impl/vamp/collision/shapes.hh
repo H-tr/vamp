@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -325,11 +326,11 @@ namespace vamp::collision
     // with the z index contiguous. Outside the lattice, the distance is read at the nearest
     // lattice point. A grid can hold several fields on the same lattice, for example a scene with
     // and without some of its obstacles. Each field has a workspace, an axis-aligned box (by
-    // default the lattice's box; a face may lie at infinity): a sphere collides unless it lies
-    // wholly inside the workspace of the field it reads and the distance at its centre is at least
-    // its radius. Spheres read field 0 unless the robot selects another field; a grid without the
-    // selected field gives field 0. The values are shared, not copied, between the float
-    // environment and its vector copies.
+    // default the lattice's box; a face may lie at infinity, stored as the largest float): a
+    // sphere collides unless it lies wholly inside the workspace of the field it reads and the
+    // distance at its centre is at least its radius. Spheres read field 0 unless the robot selects another
+    // field; a grid without the selected field gives field 0. The values are shared, not copied, between the
+    // float environment and its vector copies.
     template <typename DataT>
     struct DistanceGrid : public Shape<DataT>
     {
@@ -405,7 +406,7 @@ namespace vamp::collision
 
             for (const auto value : {x, y, z, xs, ys, zs})
             {
-                if (not std::isfinite(value))
+                if (not finite(value))
                 {
                     throw std::invalid_argument("A distance grid needs a finite origin and spacing");
                 }
@@ -424,7 +425,7 @@ namespace vamp::collision
 
             for (const auto value : *this->data)
             {
-                if (not std::isfinite(value))
+                if (not finite(value))
                 {
                     throw std::invalid_argument("Distance grid values must be finite");
                 }
@@ -448,11 +449,27 @@ namespace vamp::collision
                 throw std::invalid_argument("A distance grid needs one workspace for each field");
             }
 
-            for (const auto &box : this->workspaces)
+            // A face at infinity becomes the largest float, so the checks hold under
+            // -ffinite-math-only.
+            for (auto &box : this->workspaces)
             {
+                for (auto &bound : box)
+                {
+                    if (is_nan(bound))
+                    {
+                        throw std::invalid_argument("A distance grid workspace cannot hold NaN");
+                    }
+
+                    if (not finite(bound))
+                    {
+                        bound = (bits(bound) >> 31U) != 0 ? -std::numeric_limits<float>::max() :
+                                                            std::numeric_limits<float>::max();
+                    }
+                }
+
                 for (auto axis = 0U; axis < 3; ++axis)
                 {
-                    if (not(box[axis] <= box[axis + 3]))
+                    if (box[axis] > box[axis + 3])
                     {
                         throw std::invalid_argument("A distance grid workspace needs lower <= upper");
                     }
@@ -484,6 +501,24 @@ namespace vamp::collision
         inline auto num_points() const noexcept -> std::size_t
         {
             return static_cast<std::size_t>(nx) * static_cast<std::size_t>(ny) * static_cast<std::size_t>(nz);
+        }
+
+        // Tests on the bits, which hold under -ffinite-math-only (std::isfinite does not).
+        inline static auto bits(float value) noexcept -> std::uint32_t
+        {
+            std::uint32_t out;
+            std::memcpy(&out, &value, sizeof(out));
+            return out;
+        }
+
+        inline static auto finite(float value) noexcept -> bool
+        {
+            return (bits(value) & 0x7f800000U) != 0x7f800000U;
+        }
+
+        inline static auto is_nan(float value) noexcept -> bool
+        {
+            return (bits(value) & 0x7fffffffU) > 0x7f800000U;
         }
 
         // The field that a sphere selecting field ``index`` reads: ``index``, or 0 if the grid
